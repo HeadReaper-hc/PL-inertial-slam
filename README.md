@@ -30,12 +30,12 @@ Thankyou for their outstanding work. My code is basically copied from them
     3. `./plslam_dataset Euroc/V1_easy -c ../config/config/config_euroc.yaml`
 
 # Result
-![avatar](result/1.png)
+![avatar](./result/1.png)
 
 ## Compare with the origin PL-SLAM
  Both result is compared with ground truth using the tool of EVO, Above diagram is the result of PL-VIO and the below is PL-SLAM, ***both programs turn off the LoopClosing detection module***
-![avatar](result/2.png)
-![avatar](result/3.png)
+![avatar](./result/2.png)
+![avatar](./result/3.png)
 
 # Remarks
 1. There is no guarantee that the program will crash or run incorrectly after the ***LoopClosing*** detection module is opened
