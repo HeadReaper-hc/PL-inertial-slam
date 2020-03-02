@@ -1,4 +1,4 @@
-# PL-VIO
+# PL-inertial-slam
 
 ## Reference works
 1. PL-SLAM `https://github.com/rubengooj/pl-slam.git`
