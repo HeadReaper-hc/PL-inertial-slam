@@ -6,7 +6,7 @@ cmake_minimum_required(VERSION 2.7)
 #SET(CMAKE_BUILD_TYPE "Debug")
 #SET(CMAKE_CXX_FLAGS_DEBUG "$ENV{CXXFLAGS} -O0 -Wall -g2 -ggdb")
 #SET(CMAKE_CXX_FLAGS_RELEASE "$ENV{CXXFLAGS} -O3 -Wall")
-
+set(CMAKE_BUILD_TYPE "Release")
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake_modules")
 
 find_package(OpenCV 3 REQUIRED)
@@ -28,6 +28,13 @@ SET( StVO_INCLUDE_DIR 	"" CACHE PATH "Visual Odometry Include folder" )
 
 set(DEFAULT_HAS_MRPT ON)
 set(HAS_MRPT ${DEFAULT_HAS_MRPT} CACHE BOOL "Build the PointGrey Bumblebee2 SVO application that employs the MRPT library")
+
+# choose whether use marginalization
+set(DEFAULT_USE_MARG ON)
+set(USE_MARG ${DEFAULT_USE_MARG} CACHE BOOL "Use marginalization in the localBundleAdjustment")
+if(USE_MARG)
+add_definitions(-DUSE_MARG)
+endif(USE_MARG)
 
 SET(BUILD_SHARED_LIBS ON)
 SET(CMAKE_MODULE_PATH $ENV{CMAKE_MODULE_PATH})
@@ -107,7 +114,7 @@ list(APPEND SOURCEFILES
   IMU/types_six_dof_expmap.cpp
   IMU/types_sba.cpp
   IMU/se3_ops.hpp
-
+  IMU/marginalization.cpp
 )
 else()
 list(APPEND SOURCEFILES
@@ -122,11 +129,20 @@ list(APPEND SOURCEFILES
   stvo-pl/src/lineIterator.cpp
   stvo-pl/src/matching.cpp
   stvo-pl/src/pinholeStereoCamera.cpp
-  stvo-pl/src/sceneRepresentation.cpp
+ # stvo-pl/src/sceneRepresentation.cpp
   stvo-pl/src/stereoFeatures.cpp
   stvo-pl/src/stereoFrame.cpp
   stvo-pl/src/stereoFrameHandler.cpp
   stvo-pl/src/timer.cpp
+  IMU/so3.cpp
+  IMU/g2otypes.cpp
+  IMU/imudata.cpp
+  IMU/IMUPreintegrator.cpp
+  IMU/NavState.cpp
+  IMU/types_six_dof_expmap.cpp
+  IMU/types_sba.cpp
+  IMU/se3_ops.hpp
+  IMU/marginalization.cpp
 )
 endif()
 
@@ -152,7 +168,12 @@ target_link_libraries( plslam_dataset plslam )
 
 #add_executable( test test/test.cpp)
 #target_link_libraries(test plslam)
+else(HAS_MRPT)
+add_executable(plslam_dataset app/plslam_dataset.cpp)
+	target_link_libraries(plslam_dataset plslam)
 endif(HAS_MRPT)
+
+
 
 
 

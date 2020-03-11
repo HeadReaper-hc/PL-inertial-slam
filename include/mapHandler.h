@@ -57,6 +57,7 @@
 #include <keyFrame.h>
 #include <mapFeatures.h>
 #include <dataset.h>
+#include <marginalization.h>
 
 using namespace std;
 using namespace Eigen;
@@ -130,6 +131,7 @@ public:
     int localBundleAdjustment();
     int levMarquardtOptimizationLBA( vector<double> X_aux, vector<int> kf_list, vector<int> pt_list, vector<int> ls_list, vector<Vector6i> pt_obs_list, vector<Vector6i> ls_obs_list  );
     int localBundleAdjustmentWithImu(std::deque<KeyFrame*> vpKFs, bool* mbaAbort);
+    int localBundleAdjustmentWithImuAndMarg(std::deque<KeyFrame*> vpKFs, bool* mbaAbort);
 
     void globalBundleAdjustment();
     void levMarquardtOptimizationGBA( vector<double> X_aux, vector<int> kf_list, vector<int> pt_list, vector<int> ls_list, vector<Vector6i> pt_obs_list, vector<Vector6i> ls_obs_list  );
@@ -254,6 +256,9 @@ public:
 
     bool mbaAbort = false;
     void InterruptBA() { mbaAbort = true; }
+
+public:
+    MarginalizationInfo* marg_info = nullptr;
 
 private:
 

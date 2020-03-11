@@ -84,6 +84,7 @@ int main(int argc, char **argv)
     PinholeStereoCamera*  cam_pin = new PinholeStereoCamera((dataset_path / "dataset_params.yaml").string());
     Dataset dataset(dataset_dir, *cam_pin, frame_offset, frame_number, frame_step);
 
+#ifdef HAS_MRPT
     // create scene
     string scene_cfg_name;
     if( (dataset_name.find("kitti")!=std::string::npos) ||
@@ -96,6 +97,7 @@ int main(int argc, char **argv)
     Tcw = Matrix4d::Identity();
     scene.setStereoCalibration( cam_pin->getK(), cam_pin->getB() );
     scene.initializeScene(Tfw);
+#endif
 
     // create PLSLAM object
     PLSLAM::MapHandler* map = new PLSLAM::MapHandler(cam_pin);
@@ -117,9 +119,11 @@ int main(int argc, char **argv)
             PLSLAM::KeyFrame* kf = new PLSLAM::KeyFrame( StVO->prev_frame, 0, cam_pin );
             map->initialize( kf );
             // update scene
+#ifdef HAS_MRPT
             scene.initViewports( img_l.cols, img_r.rows );
             scene.setImage(StVO->prev_frame->plotStereoFrame());
             scene.updateSceneSafe( map );
+#endif
         }
         else // run
         {
@@ -146,14 +150,18 @@ int main(int argc, char **argv)
                 StVO->currFrameIsKF();
                 map->addKeyFrame( curr_kf );
                 // update scene
+#ifdef HAS_MRPT
                 scene.setImage(StVO->curr_frame->plotStereoFrame());
                 scene.updateSceneSafe( map );
+#endif
             }
             else
             {
+#ifdef HAS_MRPT
                 scene.setImage(StVO->curr_frame->plotStereoFrame());
                 scene.setPose( StVO->curr_frame->DT );
                 scene.updateScene();
+#endif
             }
 
             // update StVO
@@ -165,18 +173,20 @@ int main(int argc, char **argv)
 
     // finish SLAM
     map->finishSLAM();
+#ifdef HAS_MRPT
     scene.updateScene( map );
-
+#endif
     // perform GBA
     cout << endl << "Performing Global Bundle Adjustment..." ;
     map->globalBundleAdjustment();
     cout << " ... done." << endl;
     map->SaveKeyFrameTrajectoryTUM("traj");
-    scene.updateSceneGraphs( map );
 
+#ifdef HAS_MRPT
+    scene.updateSceneGraphs( map );
     // wait until the scene is closed
     while( scene.isOpen() );
-
+#endif
     return 0;
 }
 

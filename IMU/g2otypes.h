@@ -12,14 +12,39 @@
 #include <g2o/solvers/eigen/linear_solver_eigen.h>
 #include <g2o/core/block_solver.h>
 #include <iostream>
+
+#include "marginalization.h"
 //#include "Thirdparty/g2o/g2o/core/sparse_block_matrix.h"
 typedef g2o::LinearSolverEigen<g2o::BlockSolverX::PoseMatrixType> SlamLinearSolver;
 //#include "Thirdparty/g2o/g2o/core/sparse_block_matrix.h"
 
 namespace g2o {
 
+    class VertexLMPointXYZ : public BaseVertex<3, Vector3d>
+    {
+    public:
+        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+        VertexLMPointXYZ();
+        virtual bool read(std::istream& is);
+        virtual bool write(std::ostream& os) const;
 
-/**
+        virtual void setToOriginImpl() {
+            _estimate.fill(0.);
+        }
+
+        virtual void oplusImpl(const double* update)
+        {
+            Eigen::Map<const Vector3d> v(update);
+            _estimate += v;
+        }
+
+        virtual int estimateDimension() const{
+            return 3;
+        }
+    };
+
+
+    /**
  * @brief The VertexNavStatePVR class
  */
     class VertexNavStatePVR : public BaseVertex<9, NavState> {
@@ -41,6 +66,10 @@ namespace g2o {
             _estimate.IncSmallPVR(update);
         }
 
+        virtual int estimateDimension() const{
+            return 9;
+        }
+
     };
 
     class VertexNavStateBias : public BaseVertex<6, NavState> {
@@ -60,6 +89,10 @@ namespace g2o {
         virtual void oplusImpl(const double *update_) {
             Eigen::Map<const Vector6d> update(update_);
             _estimate.IncSmallBias(update);
+        }
+
+        virtual int estimateDimension() const{
+            return 6;
         }
 
     };
@@ -84,6 +117,56 @@ namespace g2o {
             GravityVec = gw;
         }
 
+        void GetJacAddr(std::vector<double*>& addr){
+            addr.clear();
+            addr.push_back(_jacobianOplus[0].data());
+            addr.push_back(_jacobianOplus[1].data());
+            addr.push_back(_jacobianOplus[2].data());
+        }
+
+        void GetEstData(std::vector<VectorXd>& data){
+            const VertexNavStatePVR* vPVRi = static_cast<const VertexNavStatePVR*>(_vertices[0]);
+            const VertexNavStatePVR* vPVRj = static_cast<const VertexNavStatePVR*>(_vertices[1]);
+            const VertexNavStateBias* vBiasi = static_cast<const VertexNavStateBias*>(_vertices[2]);
+
+            const NavState& NSPVRi = vPVRi->estimate();
+            Vector3d Pi = NSPVRi.Get_P();
+            Vector3d Vi = NSPVRi.Get_V();
+            Matrix3d Ri = NSPVRi.Get_RotMatrix();
+
+            const NavState& NSBiasi = vBiasi->estimate();
+            Vector3d dBgi = NSBiasi.Get_dBias_Gyr();
+            Vector3d dBai = NSBiasi.Get_dBias_Acc();
+
+            const NavState& NSPVRj = vPVRj->estimate();
+            Vector3d Pj = NSPVRj.Get_P();
+            Vector3d Vj = NSPVRj.Get_V();
+            Matrix3d Rj = NSPVRj.Get_RotMatrix();
+
+            VectorXd temp_vpi,temp_vpj,temp_bi;
+            temp_vpi.resize(10);
+            temp_vpj.resize(10);
+            temp_bi.resize(6);
+
+            temp_vpi.segment<3>(0) = Pi;
+            temp_vpi.segment<3>(3) = Vi;
+            Quaterniond quai(Ri);
+            temp_vpi.segment<4>(6) = Vector4d(quai.x(),quai.y(),quai.z(),quai.w());
+
+            temp_vpj.segment<3>(0) = Pj;
+            temp_vpj.segment<3>(3) = Vj;
+            Quaterniond quaj(Rj);
+            temp_vpj.segment<4>(6) = Vector4d(quaj.x(),quaj.y(),quaj.z(),quaj.w());
+
+            temp_bi.segment<3>(0) = dBgi + NSBiasi.Get_BiasGyr();
+            temp_bi.segment<3>(3) = dBai + NSBiasi.Get_BiasAcc();
+
+            data.push_back(temp_vpi);
+            data.push_back(temp_vpj);
+            data.push_back(temp_bi);
+
+        }
+
     protected:
         // Gravity vector in 'world' frame
         Vector3d GravityVec;
@@ -103,13 +186,42 @@ namespace g2o {
 
         virtual void linearizeOplus();
 
+        void GetJacAddr(std::vector<double*>& addr){
+            addr.clear();
+            addr.push_back(_jacobianOplusXi.data());
+            addr.push_back(_jacobianOplusXj.data());
+        }
+
+        void GetEstData(vector<VectorXd>& data){
+            VectorXd temp_a,temp_b;
+            temp_a.resize(6);
+            temp_b.resize(6);
+
+            const VertexNavStateBias* vBiasi = static_cast<const VertexNavStateBias*>(_vertices[0]);
+            const VertexNavStateBias* vBiasj = static_cast<const VertexNavStateBias*>(_vertices[1]);
+
+            const NavState& NSi = vBiasi->estimate();
+            const NavState& NSj = vBiasj->estimate();
+
+            temp_a.segment<3>(0) = NSi.Get_BiasGyr() + NSi.Get_dBias_Gyr();
+            temp_a.segment<3>(3) = NSi.Get_BiasAcc() + NSi.Get_dBias_Acc();
+
+            temp_b.segment<3>(0) = NSj.Get_BiasGyr() + NSj.Get_dBias_Gyr();
+            temp_b.segment<3>(3) = NSj.Get_BiasAcc() + NSj.Get_dBias_Acc();
+
+            data.push_back(temp_a);
+            data.push_back(temp_b);
+
+
+        }
+
     };
 
-    class EdgeNavStatePVRPointXYZ : public BaseBinaryEdge<2, Vector2d, VertexSBAPointXYZ, VertexNavStatePVR> {
+    class EdgeNavStatePVRPointXYZ : public BaseBinaryEdge<2, Vector2d, VertexLMPointXYZ, VertexNavStatePVR> {
     public:
         EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
-        EdgeNavStatePVRPointXYZ() : BaseBinaryEdge<2, Vector2d, VertexSBAPointXYZ, VertexNavStatePVR>() {}
+        EdgeNavStatePVRPointXYZ() : BaseBinaryEdge<2, Vector2d, VertexLMPointXYZ, VertexNavStatePVR>() {}
 
         bool read(std::istream &is) { return true; }
 
@@ -129,7 +241,7 @@ namespace g2o {
         }
 
         Vector3d computePc() {
-            const VertexSBAPointXYZ *vPoint = static_cast<const VertexSBAPointXYZ *>(_vertices[0]);
+            const VertexLMPointXYZ *vPoint = static_cast<const VertexLMPointXYZ *>(_vertices[0]);
             const VertexNavStatePVR *vNavState = static_cast<const VertexNavStatePVR *>(_vertices[1]);
 
             const NavState &ns = vNavState->estimate();
@@ -173,6 +285,37 @@ namespace g2o {
             cy = cy_;
             Rbc = Rbc_;
             Pbc = Pbc_;
+        }
+
+        void GetJacAddr(std::vector<double*>& addr){
+            addr.clear();
+            addr.push_back(_jacobianOplusXi.data());
+            addr.push_back(_jacobianOplusXj.data());
+        }
+
+        void GetEstData(std::vector<VectorXd>& data){
+            VectorXd temp_a,temp_b;
+            temp_a.resize(3);
+            temp_b.resize(10);
+
+            const VertexLMPointXYZ* vPoint = static_cast<const VertexLMPointXYZ*>(_vertices[0]);
+            const VertexNavStatePVR* vNavState = static_cast<const VertexNavStatePVR*>(_vertices[1]);
+
+            const NavState& ns = vNavState->estimate();
+            Matrix3d Rwb = ns.Get_RotMatrix();
+            Vector3d Pwb = ns.Get_P();
+            Vector3d Pwv = ns.Get_V();
+            const Vector3d& Pw = vPoint->estimate();
+
+            temp_a.segment<3>(0) = Pw;
+
+            temp_b.segment<3>(0) = Pwb;
+            temp_b.segment<3>(3) = Pwv;
+            Quaterniond qua(Rwb);
+            temp_b.segment<4>(6) = Vector4d(qua.x(),qua.y(),qua.z(),qua.w());
+
+            data.push_back(temp_a);
+            data.push_back(temp_b);
         }
 
     protected:
@@ -394,7 +537,7 @@ namespace g2o {
  * Edge between NavState and Point3D, vertex[0]~Point3D, vertex[1]~NavState
  * Measurement~Vector2d: 2Dof image feature position
  */
-    class EdgeNavStatePointXYZ : public BaseBinaryEdge<2, Vector2d, VertexSBAPointXYZ, VertexNavState> {
+    class EdgeNavStatePointXYZ : public BaseBinaryEdge<2, Vector2d, VertexLMPointXYZ, VertexNavState> {
     public:
         EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
@@ -417,7 +560,7 @@ namespace g2o {
         }
 
         Vector3d computePc() {
-            const VertexSBAPointXYZ *vPoint = static_cast<const VertexSBAPointXYZ *>(_vertices[0]);
+            const VertexLMPointXYZ *vPoint = static_cast<const VertexLMPointXYZ *>(_vertices[0]);
             const VertexNavState *vNavState = static_cast<const VertexNavState *>(_vertices[1]);
 
             const NavState &ns = vNavState->estimate();
@@ -616,6 +759,11 @@ namespace g2o {
         }
 
         virtual void oplusImpl(const double *update_);
+
+        virtual int estimateDimension() const{
+
+            return 6;
+        }
     };
 
 /**
@@ -650,13 +798,13 @@ namespace g2o {
         }
 
         Vector6d computePc() {
-            const VertexLine *vPoint = static_cast<const VertexLine *>(_vertices[0]);
-            const VertexNavStatePVR *vNavState = static_cast<const VertexNavStatePVR *>(_vertices[1]);
+            const VertexLine* vPoint = static_cast<const VertexLine*>(_vertices[0]);
+            const VertexNavStatePVR* vNavState = static_cast<const VertexNavStatePVR*>(_vertices[1]);
 
-            const NavState &ns = vNavState->estimate();
+            const NavState& ns = vNavState->estimate();
             Matrix3d Rwb = ns.Get_RotMatrix();
             Vector3d Pwb = ns.Get_P();
-            const Vector6d &Pw = vPoint->estimate();
+            const Vector6d& Pw = vPoint->estimate();
 
             Vector3d pw_s, pw_e;
             pw_s = Pw.head(3);
@@ -702,6 +850,38 @@ namespace g2o {
             cy = cy_;
             Rbc = Rbc_;
             Pbc = Pbc_;
+        }
+
+        void GetJacAddr(std::vector<double*>& addr){
+            addr.clear();
+            addr.push_back(_jacobianOplusXi.data());
+            addr.push_back(_jacobianOplusXj.data());
+        }
+
+        void GetEstData(std::vector<VectorXd>& data){
+
+            VectorXd temp_a, temp_b;
+            temp_a.resize(6);
+            temp_b.resize(10);
+
+            const VertexLine* vPoint = static_cast<const VertexLine*>(_vertices[0]);
+            const VertexNavStatePVR* vNavState = static_cast<const VertexNavStatePVR*>(_vertices[1]);
+
+            const NavState& ns = vNavState->estimate();
+            Matrix3d Rwb = ns.Get_RotMatrix();
+            Vector3d Pwb = ns.Get_P();
+            Vector3d Pwv = ns.Get_V();
+            const Vector6d& Pw = vPoint->estimate();
+
+            temp_a.segment<6>(0) = Pw;
+
+            temp_b.segment<3>(0) = Pwb;
+            temp_b.segment<3>(3) = Pwv;
+            Quaterniond qua(Rwb);
+            temp_b.segment<4>(6) = Vector4d(qua.x(),qua.y(),qua.z(),qua.w());
+
+            data.push_back(temp_a);
+            data.push_back(temp_b);
         }
 
     protected:
@@ -817,6 +997,84 @@ namespace g2o {
         Matrix3d Rbc;
         Vector3d Pbc;
 
+    };
+
+
+    class EdgeMarginalization : public BaseMultiEdge<-1, MarginalizationInfo> {
+    public:
+        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+        EdgeMarginalization() : BaseMultiEdge<-1, MarginalizationInfo>() {
+        }
+
+        bool read(std::istream &is) { return true; }
+
+        bool write(std::ostream &os) const { return true; }
+
+        void computeError();
+
+        virtual void linearizeOplus();
+
+        void setDimension(int dimension_)
+        {
+            _dimension = dimension_;
+            _information.resize(dimension_, dimension_);
+            _error.resize(dimension_, 1);
+        }
+
+        void setSize(int vertices)
+        {
+            resize(vertices);
+        }
+
+        void GetJacAddr(std::vector<double*>& addr){
+            addr.clear();
+            for(int i=0;i<_vertices.size();i++){
+                addr.push_back(_jacobianOplus[i].data());
+            }
+        }
+
+        void GetEstData(std::vector<VectorXd>& data){
+            MarginalizationInfo* marg = &(_measurement);
+            if(_vertices.size()!=marg->keep_vertex_id.size()){
+                std::cout<<"Wrong size between vertex and variable in MarginalizationInfo...."<<std::endl;
+                exit(0);
+            }
+            for(int i=0;i<_vertices.size();i++){
+                int N = marg->keep_vertex_size[i];
+                if(N==9){
+                    VectorXd temp;
+                    temp.resize(10);
+                    VertexNavStatePVR* pvr = dynamic_cast<VertexNavStatePVR*>(_vertices[i]);
+                    const NavState& pvrState = pvr->estimate();
+                    Matrix3d Rwb = pvrState.Get_RotMatrix();
+                    Vector3d Pwb = pvrState.Get_P();
+                    Vector3d Vwb = pvrState.Get_V();
+
+                    temp.segment<3>(0) = Pwb;
+                    temp.segment<3>(3) = Vwb;
+                    Quaterniond qua(Rwb);
+                    temp.segment<4>(6) = Vector4d(qua.x(),qua.y(),qua.z(),qua.w());
+                    data.push_back(temp);
+                }
+                else if(N==6){
+                    VectorXd temp;
+                    temp.resize(6);
+                    VertexNavStateBias* bias = dynamic_cast<VertexNavStateBias*>(_vertices[i]);
+                    const NavState& biasState = bias->estimate();
+                    Vector3d bias_gyr = biasState.Get_BiasGyr() + biasState.Get_dBias_Gyr();
+                    Vector3d bias_acc = biasState.Get_BiasAcc() + biasState.Get_dBias_Acc();
+
+                    temp.segment<3>(0) = bias_gyr;
+                    temp.segment<3>(3) = bias_acc;
+                    data.push_back(temp);
+                }
+                else{
+                    std::cout<<"Undefined size of marginalization vertex: "<<N<<std::endl;
+                    exit(0);
+                }
+            }
+        }
     };
 }
 

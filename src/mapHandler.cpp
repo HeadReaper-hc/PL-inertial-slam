@@ -37,6 +37,7 @@
 #include <g2o/core/robust_kernel_impl.h>
 #include "g2otypes.h"
 #include <IMUPreintegrator.h>
+#include <types_sba.h>
 
 namespace PLSLAM
 {
@@ -1051,7 +1052,7 @@ void MapHandler::handlerThread() {
 
         curr_kf_mt = kf_queue.front().first;
         prev_kf_mt = kf_queue.front().second;
-        addKeyframeToSW(curr_kf_mt);
+        //addKeyframeToSW(curr_kf_mt);
         kf_queue.pop_front();
 
         lk.unlock();
@@ -1063,11 +1064,13 @@ void MapHandler::handlerThread() {
         }
         lba_start.notify_one();
 
-//        {
-//            std::lock_guard<std::mutex> lk(lc_mutex);
-//            lc_thread_status = LC_ACTIVE;
-//        }
-//        lc_start.notify_one();
+        //if closing loopclosing
+        {
+            std::lock_guard<std::mutex> lk(lc_mutex);
+            lc_thread_status = LC_ACTIVE;
+        }
+        lc_start.notify_one();
+        //end closing loopclosing
 
         if( curr_kf_mt == nullptr || prev_kf_mt == nullptr ) return;
 
@@ -1076,16 +1079,17 @@ void MapHandler::handlerThread() {
         if( lba_thread_status != LBA_IDLE )
             lba_join.wait(lba_lk, [this]{return (lba_thread_status == LBA_IDLE);});
 
-//        std::unique_lock<std::mutex> lc_lk(lc_mutex);
-//        if ( lc_thread_status != LC_IDLE )
-//            lc_join.wait(lc_lk, [this]{return (lc_thread_status == LC_IDLE);});
-//
-//        // loop closure
-//        if( lc_state == LC_READY )
-//        {
-//            loopClosureOptimizationCovGraphG2O();
-//            lc_state = LC_IDLE;
-//        }
+        //if close loopclosing
+        std::unique_lock<std::mutex> lc_lk(lc_mutex);
+        if ( lc_thread_status != LC_IDLE )
+            lc_join.wait(lc_lk, [this]{return (lc_thread_status == LC_IDLE);});
+
+        // loop closure
+        if( lc_state == LC_READY )
+        {
+            loopClosureOptimizationCovGraphG2O();
+            lc_state = LC_IDLE;
+        }
 
     }
 
@@ -1107,12 +1111,13 @@ void MapHandler::startThreads() {
     std::thread localMapping(&MapHandler::localMappingThread, this);
     localMapping.detach();
 
-//    {
-//        std::lock_guard<std::mutex> lk(lc_mutex);
-//        lc_thread_status = LC_IDLE;
-//    }
-//    std::thread loopClosure(&MapHandler::loopClosureThread, this);
-//    loopClosure.detach();
+    //if closing loopclosing
+    {
+        std::lock_guard<std::mutex> lk(lc_mutex);
+        lc_thread_status = LC_IDLE;
+    }
+    std::thread loopClosure(&MapHandler::loopClosureThread, this);
+    loopClosure.detach();
 }
 
 void MapHandler::killThreads() {
@@ -1132,9 +1137,10 @@ void MapHandler::killThreads() {
     if (lba_thread_status != LBA_TERMINATED)
         lba_join.wait(lba_lk, [this]{return (lba_thread_status == LBA_TERMINATED);});
 
-//    std::unique_lock<std::mutex> lc_lk(lc_mutex);
-//    if (lc_thread_status != LC_TERMINATED)
-//        lc_join.wait(lc_lk, [this]{return (lc_thread_status == LC_TERMINATED);});
+    //if closing loopclosing
+    std::unique_lock<std::mutex> lc_lk(lc_mutex);
+    if (lc_thread_status != LC_TERMINATED)
+        lc_join.wait(lc_lk, [this]{return (lc_thread_status == LC_TERMINATED);});
 }
 
 void MapHandler::localMappingThread() {
@@ -1148,7 +1154,7 @@ void MapHandler::localMappingThread() {
         if (lba_thread_status != LBA_ACTIVE)
             lba_start.wait(lk, [this]{return (lba_thread_status == LBA_ACTIVE);});
         lk.unlock();
-
+        addKeyframeToSW(curr_kf_mt);
         if (curr_kf_mt == nullptr || prev_kf_mt == nullptr) break;
 
         // reset indices
@@ -1169,6 +1175,7 @@ void MapHandler::localMappingThread() {
             int lba = localBundleAdjustment();
             tryVioInit();
         }
+#ifndef USE_MARG
         else{
             lk_sw.lock();
             std::deque<KeyFrame*> vpKFs = slideWindow;
@@ -1195,7 +1202,17 @@ void MapHandler::localMappingThread() {
             formLocalMap(vpKFs);
             int lba = localBundleAdjustmentWithImu(vpKFs,&mbaAbort);
         }
+#else
+        else{
+            lk_sw.lock();
+            std::deque<KeyFrame*> vpKFs = slideWindow;
+            lk_sw.unlock();
 
+            mbaAbort = false;
+            int lba = localBundleAdjustmentWithImuAndMarg(vpKFs,&mbaAbort);
+        }
+
+#endif
         // recent map LMs culling (implement filters for line segments, which seems to be unaccurate)
         removeBadMapLandmarks();
 
@@ -5291,7 +5308,7 @@ int MapHandler::localBundleAdjustmentWithImu(deque<KeyFrame *> vpKFs, bool* mbaA
     for(vector<MapPoint*>::iterator lit=local_pt.begin(), lend=local_pt.end(); lit!=lend; lit++)
     {
         MapPoint* pMP = *lit;
-        g2o::VertexSBAPointXYZ* vPoint = new g2o::VertexSBAPointXYZ();
+        g2o::VertexLMPointXYZ* vPoint = new g2o::VertexLMPointXYZ();
         vPoint->setEstimate(pMP->point3D);
         int id = pMP->idx+maxKFid+1;
         vPoint->setId(id);
@@ -5337,7 +5354,7 @@ int MapHandler::localBundleAdjustmentWithImu(deque<KeyFrame *> vpKFs, bool* mbaA
         }
 
         if(maxPointId <id+1);
-            maxPointId = id+1;
+        maxPointId = id+1;
     }
 
     //MapLine Vertex
@@ -5471,11 +5488,11 @@ int MapHandler::localBundleAdjustmentWithImu(deque<KeyFrame *> vpKFs, bool* mbaA
         if(*mbaAbort)
             return 1;
 
-  //  cout<<"Begin optimize...."<<endl;
- //   optimizer.setVerbose(true);
+    //  cout<<"Begin optimize...."<<endl;
+    //   optimizer.setVerbose(true);
     optimizer.initializeOptimization();
     optimizer.optimize(5);
-  //  cout<<"End optimize"<<endl;
+    //  cout<<"End optimize"<<endl;
 
     bool bDoMore= true;
 
@@ -5546,7 +5563,7 @@ int MapHandler::localBundleAdjustmentWithImu(deque<KeyFrame *> vpKFs, bool* mbaA
                     // delete observation from map_points_kf_idx
                     for( auto it = map_points_kf_idx.at(kf_obs).begin(); it != map_points_kf_idx.at(kf_obs).end(); it++)
                     {
-                       if( (*it) == lm_idx_map )
+                        if( (*it) == lm_idx_map )
                         {
                             int new_kf_base = pMP->kf_obs_list[1];
                             map_points_kf_idx.at(new_kf_base).push_back( (*it) );
@@ -5695,7 +5712,7 @@ int MapHandler::localBundleAdjustmentWithImu(deque<KeyFrame *> vpKFs, bool* mbaA
     for(vector<MapPoint*>::const_iterator lit=local_pt.begin(), lend=local_pt.end(); lit!=lend; lit++)
     {
         MapPoint* pMP = *lit;
-        g2o::VertexSBAPointXYZ* vPoint = static_cast<g2o::VertexSBAPointXYZ*>(optimizer.vertex(pMP->idx+maxKFid+1));
+        g2o::VertexLMPointXYZ* vPoint = static_cast<g2o::VertexLMPointXYZ*>(optimizer.vertex(pMP->idx+maxKFid+1));
         pMP->point3D = vPoint->estimate();
     }
 
@@ -5718,6 +5735,522 @@ int MapHandler::localBundleAdjustmentWithImu(deque<KeyFrame *> vpKFs, bool* mbaA
 //    }
 
     cout<<"Finish Local Bundle Adjustment With IMU!"<<endl;
+    return 0;
+}
+
+int MapHandler::localBundleAdjustmentWithImuAndMarg(deque<KeyFrame *> vpKFs, bool *mbaAbort) {
+
+    cout<<"Perform Local Bundle Adjustment With Imu And Marg...."<<endl;
+    //camera param
+    double fx = cam->getFx();
+    double fy = cam->getFy();
+    double cx = cam->getCx();
+    double cy = cam->getCy();
+
+    Matrix4d Tcb = cam->getTbs();  //from camera to imu
+    Matrix4d Tbc = cam->getTbs().inverse();
+    Matrix3d Rbc = Tcb.block<3,3>(0,0);
+    Vector3d tbc = Tcb.block<3,1>(0,3);
+
+    vector<MapPoint*> local_pt;
+    vector<MapLine*> local_ls;
+    map<int, KeyFrame*> idx_fix_kfs;
+    map<int, KeyFrame*> all_idx_kfs;
+    local_pt.clear();
+    local_ls.clear();
+    idx_fix_kfs.clear();
+
+    vector<MapPoint*> all_map_points = GetMapPoints();
+    vector<MapLine*> all_map_lines = GetMapLines();
+    vector<KeyFrame*> all_map_keyframes = GetMapKeyFrames();
+
+    //form local map
+    int first_kf_idx = vpKFs.front()->kf_idx;
+    for(int i=0;i<all_map_points.size();i++){
+        MapPoint* pt = all_map_points[i];
+        if(pt!=NULL && pt->kf_obs_list.size()>0 && pt->kf_obs_list[0]>=first_kf_idx){
+            local_pt.push_back(pt);
+        }
+    }
+
+    for(int i=0;i<all_map_lines.size();i++){
+        MapLine* ls = all_map_lines[i];
+        if(ls!=NULL && ls->kf_obs_list.size()>0 && ls->kf_obs_list[0]>=first_kf_idx){
+            local_ls.push_back(ls);
+        }
+    }
+
+    for(int i=0;i<vpKFs.size();i++){
+        all_idx_kfs.insert(make_pair(vpKFs[i]->kf_idx,vpKFs[i]));
+    }
+
+    g2o::SparseOptimizer optimizer;
+
+    auto linearSolver = g2o::make_unique<SlamLinearSolver>();
+//    linearSolver->setBlockOrdering(false);
+    auto blockSolver = g2o::make_unique<g2o::BlockSolverX>(std::move(linearSolver));
+    g2o::OptimizationAlgorithm *algorithm = new g2o::OptimizationAlgorithmLevenberg(std::move(blockSolver));
+
+    optimizer.setAlgorithm(algorithm);
+
+    if(mbaAbort)
+        optimizer.setForceStopFlag(mbaAbort);
+
+    int maxKFid = 0;
+    bool firstFix = true;
+    //slidewindow keyframe vertex
+    for(deque<KeyFrame*>::const_iterator lit=vpKFs.begin(), lend=vpKFs.end(); lit!=lend; lit++)
+    {
+        KeyFrame* pKFi = *lit;
+        int idKF = pKFi->kf_idx*2;
+        // Vertex of PVR
+        {
+            g2o::VertexNavStatePVR * vNSPVR = new g2o::VertexNavStatePVR();
+            vNSPVR->setEstimate(pKFi->GetNavState());
+            vNSPVR->setId(idKF);
+            vNSPVR->setFixed(false);
+            if(pKFi==vpKFs[0] && firstFix){
+                vNSPVR->setFixed(true);
+            }
+            optimizer.addVertex(vNSPVR);
+        }
+        // Vertex of Bias
+        {
+            g2o::VertexNavStateBias * vNSBias = new g2o::VertexNavStateBias();
+            vNSBias->setEstimate(pKFi->GetNavState());
+            vNSBias->setId(idKF+1);
+            vNSBias->setFixed(false);
+            if(pKFi==vpKFs[0] && firstFix){
+                vNSBias->setFixed(true);
+            }
+            optimizer.addVertex(vNSBias);
+        }
+        if(idKF+1>maxKFid)
+            maxKFid = idKF+1;
+    }
+
+    vector<g2o::EdgeNavStatePVR*> vpEdgesNavStatePVR;
+    vector<g2o::EdgeNavStateBias*> vpEdgesNavStateBias;
+    vpEdgesNavStatePVR.clear();
+    vpEdgesNavStateBias.clear();
+    const float thHuberNavStatePVR = sqrt(21.666);
+    const float thHuberNavStateBias = sqrt(16.812);
+    Matrix<double,6,6> InvCovBgaRW = Matrix<double,6,6>::Identity();
+    InvCovBgaRW.topLeftCorner(3,3) = Matrix3d::Identity()/IMUData::getGyrBiasRW2();       // Gyroscope bias random walk, covariance INVERSE
+    InvCovBgaRW.bottomRightCorner(3,3) = Matrix3d::Identity()/IMUData::getAccBiasRW2();   // Accelerometer bias random walk, covariance INVERSE
+
+    for(deque<KeyFrame*>::const_iterator lit=vpKFs.begin(), lend=vpKFs.end(); lit!=lend; lit++)
+    {
+        KeyFrame* pKF1 = *lit;                // Current KF, store the IMU pre-integration between previous-current
+        KeyFrame* pKF0 = pKF1->RefKeyframe;   // Previous KF
+
+        if(pKF1 == vpKFs[0])
+            continue;
+
+        // PVR edge
+        {
+            g2o::EdgeNavStatePVR * epvr = new g2o::EdgeNavStatePVR();
+            epvr->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(2*pKF0->kf_idx)));
+            epvr->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(2*pKF1->kf_idx)));
+            epvr->setVertex(2, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(2*pKF0->kf_idx+1)));
+            epvr->setMeasurement(pKF1->GetIMUPreInt());
+
+            Matrix9d InvCovPVR = pKF1->GetIMUPreInt().getCovPVPhi().inverse();
+            epvr->setInformation(InvCovPVR);
+            epvr->SetParams(gw);
+
+            g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
+            epvr->setRobustKernel(rk);
+            rk->setDelta(thHuberNavStatePVR);
+
+            optimizer.addEdge(epvr);
+            vpEdgesNavStatePVR.push_back(epvr);
+        }
+        // Bias edge
+        {
+            g2o::EdgeNavStateBias * ebias = new g2o::EdgeNavStateBias();
+            ebias->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(2*pKF0->kf_idx+1)));
+            ebias->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(2*pKF1->kf_idx+1)));
+            ebias->setMeasurement(pKF1->GetIMUPreInt());
+
+            ebias->setInformation(InvCovBgaRW/pKF1->GetIMUPreInt().getDeltaTime());
+
+            g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
+            ebias->setRobustKernel(rk);
+            rk->setDelta(thHuberNavStateBias);
+
+            optimizer.addEdge(ebias);
+            vpEdgesNavStateBias.push_back(ebias);
+        }
+    }
+
+    //MapPoint vertex
+    vector<g2o::EdgeNavStatePVRPointXYZ*> vpEdgesMono;
+//    vpEdgesMono.reserve(nExpectedSize);
+    vector<KeyFrame*> vpEdgeKFMono;
+//    vpEdgeKFMono.reserve(nExpectedSize);
+    vector<MapPoint*> vpMapPointEdgeMono;
+//    vpMapPointEdgeMono.reserve(nExpectedSize);
+    vector<int> vpLmObsIdx;
+    int maxPointId = maxKFid;
+    const float thHuberMono = sqrt(5.991);
+    for(vector<MapPoint*>::iterator lit=local_pt.begin(), lend=local_pt.end(); lit!=lend; lit++)
+    {
+        MapPoint* pMP = *lit;
+        g2o::VertexLMPointXYZ* vPoint = new g2o::VertexLMPointXYZ();
+        vPoint->setEstimate(pMP->point3D);
+        int id = pMP->idx+maxKFid+1;
+        vPoint->setId(id);
+        vPoint->setFixed(false);
+        vPoint->setMarginalized(true);
+        optimizer.addVertex(vPoint);
+
+        const vector<int> observations = pMP->kf_obs_list;
+
+        // Set edges between KeyFrame and MapPoint
+        for(int i=0;i<observations.size();i++)
+        {
+            int kf_id = observations[i];
+            KeyFrame* pKF = NULL;
+            map<int,KeyFrame*>::iterator kf_it = all_idx_kfs.find(kf_id);
+            if(kf_it==all_idx_kfs.end()){
+                cout<<"[can't find KeyFrame in all_idx_xfs.....]"<<endl;
+//                exit(0);
+                continue;
+            }
+            pKF = kf_it->second;
+
+            const Vector2d obs = pMP->obs_list[i];
+
+            g2o::EdgeNavStatePVRPointXYZ* e = new g2o::EdgeNavStatePVRPointXYZ();
+
+            e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(id)));
+            e->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(2*kf_id)));
+            e->setMeasurement(obs);
+            const float &invSigma2 = 1.0 / pMP->sigma_list[i];
+            e->setInformation(Eigen::Matrix2d::Identity()*invSigma2);
+
+            g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
+            e->setRobustKernel(rk);
+            rk->setDelta(thHuberMono);
+
+            e->SetParams(fx,fy,cx,cy,Rbc,tbc);
+
+            optimizer.addEdge(e);
+            vpEdgesMono.push_back(e);
+            vpEdgeKFMono.push_back(pKF);
+            vpMapPointEdgeMono.push_back(pMP);
+            vpLmObsIdx.push_back(i);
+        }
+
+        if(maxPointId <id+1);
+        maxPointId = id+1;
+    }
+
+    //MapLine Vertex
+    vector<g2o::EdgeNavStateLine*> vlEdgesMono;
+    vector<KeyFrame*> vlEdgeKFMono;
+    vector<MapLine*> vlMapLineEdgeMono;
+    vector<int> vlLmObsIdx;
+
+    const float thHuberLine = sqrt(5.991);
+    for(vector<MapLine*>::iterator lit=local_ls.begin(), lend=local_ls.end(); lit!=lend; lit++)
+    {
+        MapLine* lML = *lit;
+        g2o::VertexLine* vLine = new g2o::VertexLine();
+        vLine->setEstimate(lML->line3D);
+        int id = lML->idx+maxPointId+1;
+        vLine->setId(id);
+        vLine->setMarginalized(true);
+        optimizer.addVertex(vLine);
+
+        const vector<int> observations = lML->kf_obs_list;
+
+        // Set edges between KeyFrame and MapPoint
+        for(int i=0;i<observations.size();i++)
+        {
+            int kf_id = observations[i];
+            KeyFrame* pKF = NULL;
+            map<int,KeyFrame*>::iterator kf_it = all_idx_kfs.find(kf_id);
+            if(kf_it==all_idx_kfs.end()){
+                cout<<"[can't find KeyFrame in all_idx_xfs.....]"<<endl;
+//                exit(0);
+                continue;
+            }
+            pKF = kf_it->second;
+
+            const Vector3d obs = lML->obs_list[i];
+
+            g2o::EdgeNavStateLine* e = new g2o::EdgeNavStateLine();
+
+            e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(id)));
+            e->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(2*kf_id)));
+            e->setMeasurement(obs);
+            const float &invSigma2 = 1.0 / lML->sigma_list[i];
+            e->setInformation(Eigen::Matrix3d::Identity()*invSigma2);
+
+            g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
+            e->setRobustKernel(rk);
+            rk->setDelta(thHuberLine);
+
+            e->SetParams(fx,fy,cx,cy,Rbc,tbc);
+
+            optimizer.addEdge(e);
+            vlEdgesMono.push_back(e);
+            vlEdgeKFMono.push_back(pKF);
+            vlMapLineEdgeMono.push_back(lML);
+            vlLmObsIdx.push_back(i);
+        }
+    }
+    vector<g2o::EdgeMarginalization*> vpEdgesMarg;
+    vpEdgesMarg.clear();
+    if( marg_info ){
+        std::cout<<"Begin add Marg edge..."<<std::endl;
+        vector<int> keep_vertex_id = marg_info->keep_vertex_id;
+        int dimension = marg_info->n;
+        if(keep_vertex_id.size()>0){
+            int N = keep_vertex_id.size();
+
+            //debug
+            std::cout<<"Keep vertex id: ";
+            for(int i=0;i<keep_vertex_id.size();i++){
+                std::cout<<keep_vertex_id[i]<<" ";
+            }
+            std::cout<<std::endl;
+            std::cout<<"Dimension: "<<dimension<<std::endl;
+
+            g2o::EdgeMarginalization* edgeMarg = new g2o::EdgeMarginalization();
+            edgeMarg->setSize(N);
+            edgeMarg->setDimension(dimension);
+            for(int i=0;i<keep_vertex_id.size();i++){
+                int VertexId = keep_vertex_id[i];
+                edgeMarg->setVertex(i, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(VertexId)));
+            }
+            edgeMarg->setMeasurement(*marg_info);
+            edgeMarg->setInformation(MatrixXd::Identity(dimension,dimension));
+            optimizer.addEdge(edgeMarg);
+            vpEdgesMarg.push_back(edgeMarg);
+        }
+    }
+
+   // cout<<"Begin optimize...."<<endl;
+   // optimizer.setVerbose(true);
+    optimizer.initializeOptimization();
+    optimizer.optimize(5);
+   // cout<<"End optimize"<<endl;
+
+    bool bDoMore= true;
+
+    if(mbaAbort)
+        if(*mbaAbort)
+            bDoMore = false;
+    if(bDoMore) {
+        //MapPoint error
+        for (size_t i = 0, iend = vpEdgesMono.size(); i < iend; i++) {
+            g2o::EdgeNavStatePVRPointXYZ *e = vpEdgesMono[i];
+            if (e->chi2() > 5.991 || !e->isDepthPositive()) {
+                e->setLevel(1);
+            }
+
+            e->setRobustKernel(0);
+        }
+
+        //MapLine error
+        for (size_t i = 0; i < vlEdgesMono.size(); i++) {
+            g2o::EdgeNavStateLine *e = vlEdgesMono[i];
+            if (e->chi2() > 5.991 || !e->isDepthPositive()) {
+                e->setLevel(1);
+            }
+            e->setRobustKernel(0);
+        }
+
+        //   optimizer.setVerbose(true);
+        optimizer.initializeOptimization(0);
+        optimizer.optimize(10);
+    }
+
+    //do marginalization, marginalize the oldest frame
+    int NUM = 50; //the number of Point and Line to marginalize, reduce the time of marginalize
+    MarginalizationInfo* new_marg_info = new MarginalizationInfo();
+    if(vpKFs.size()>=max_keyframe_in_slideWindow){
+        std::cout<<"Begin Build Marg...."<<std::endl;
+        {
+            g2o::OptimizableGraph::Edge *edgePVR = dynamic_cast<g2o::OptimizableGraph::Edge *>(vpEdgesNavStatePVR[0]);
+            vector<int> drop_set;
+            vector<double*> addr;
+            vector<VectorXd> estimate_data;
+            drop_set.clear();
+            addr.clear();
+            estimate_data.clear();
+            drop_set.push_back(0);
+            vpEdgesNavStatePVR[0]->GetJacAddr(addr);
+            vpEdgesNavStatePVR[0]->GetEstData(estimate_data);
+
+            ResidualBlockInfo* ImuRes = new ResidualBlockInfo(edgePVR,drop_set,estimate_data,addr,"PVR");
+            new_marg_info->addResidualBlockInfo(ImuRes);
+        }
+
+        {
+            g2o::OptimizableGraph::Edge *edgeBias = dynamic_cast<g2o::OptimizableGraph::Edge*>(vpEdgesNavStateBias[0]);
+            vector<int> drop_set;
+            vector<double*> addr;
+            vector<VectorXd> estimate_data;
+            drop_set.clear();
+            addr.clear();
+            estimate_data.clear();
+            drop_set.push_back(0);
+            vpEdgesNavStateBias[0]->GetJacAddr(addr);
+            vpEdgesNavStateBias[0]->GetEstData(estimate_data);
+
+            ResidualBlockInfo* BiasRes = new ResidualBlockInfo(edgeBias,drop_set,estimate_data,addr,"BIAS");
+            new_marg_info->addResidualBlockInfo(BiasRes);
+        }
+
+        {
+            int num = 0;
+            for(int i=0;i<vpEdgesMono.size();i++){
+                MapPoint* vp = vpMapPointEdgeMono[i];
+                if(vp->kf_obs_list[0] == first_kf_idx){
+                    g2o::OptimizableGraph::Edge *edgePoint = dynamic_cast<g2o::OptimizableGraph::Edge*>(vpEdgesMono[i]);
+                    vector<int> drop_set;
+                    vector<double*> addr;
+                    vector<VectorXd> estimate_data;
+                    drop_set.clear();
+                    addr.clear();
+                    estimate_data.clear();
+                    drop_set.push_back(0);
+                    if(edgePoint->vertex(1)->id()==2*first_kf_idx){
+                        drop_set.push_back(1);
+                    }
+                    vpEdgesMono[i]->GetJacAddr(addr);
+                    vpEdgesMono[i]->GetEstData(estimate_data);
+
+                    ResidualBlockInfo* PointRes = new ResidualBlockInfo(edgePoint,drop_set,estimate_data,addr,"POINT");
+                    new_marg_info->addResidualBlockInfo(PointRes);
+                    num++;
+                    if(num>NUM){
+                        break;
+                    }
+                }
+            }
+        }
+
+        {
+            int num = 0;
+            for(int i=0;i<vlEdgesMono.size();i++){
+                MapLine* ls = vlMapLineEdgeMono[i];
+                if(ls->kf_obs_list[0] == first_kf_idx){
+                    g2o::OptimizableGraph::Edge *edgeLine = dynamic_cast<g2o::OptimizableGraph::Edge*>(vlEdgesMono[i]);
+                    vector<int> drop_set;
+                    vector<double*> addr;
+                    vector<VectorXd> estimate_data;
+                    drop_set.clear();
+                    addr.clear();
+                    estimate_data.clear();
+                    drop_set.push_back(0);
+                    if(edgeLine->vertex(1)->id()==2*first_kf_idx){
+                        drop_set.push_back(1);
+                    }
+                    vlEdgesMono[i]->GetJacAddr(addr);
+                    vlEdgesMono[i]->GetEstData(estimate_data);
+
+                    ResidualBlockInfo* LineRes = new ResidualBlockInfo(edgeLine,drop_set,estimate_data,addr,"LINE");
+                    new_marg_info->addResidualBlockInfo(LineRes);
+                    num++;
+                    if(num>NUM){
+                        break;
+                    }
+                }
+            }
+        }
+
+        {
+            if(vpEdgesMarg.size()!=0){
+                g2o::OptimizableGraph::Edge* edgeMarg = dynamic_cast<g2o::OptimizableGraph::Edge*>(vpEdgesMarg[0]);
+                vector<int> drop_set;
+                vector<double*> addr;
+                vector<VectorXd> estimate_data;
+                drop_set.clear();
+                addr.clear();
+                estimate_data.clear();
+                for(int i=0;i<vpEdgesMarg[0]->vertices().size();i++){
+                    g2o::OptimizableGraph::Vertex* vertex = dynamic_cast<g2o::OptimizableGraph::Vertex*>(edgeMarg->vertex(i));
+                    if(vertex->id() == 2*first_kf_idx || vertex->id()==2*first_kf_idx+1){
+                        drop_set.push_back(i);
+                    }
+                }
+                vpEdgesMarg[0]->GetJacAddr(addr);
+                vpEdgesMarg[0]->GetEstData(estimate_data);
+
+                ResidualBlockInfo* margRes = new ResidualBlockInfo(edgeMarg,drop_set,estimate_data,addr,"MARG");
+                new_marg_info->addResidualBlockInfo(margRes);
+            }
+        }
+        cout<<"begin preMarginlize...."<<endl;
+        new_marg_info->preMarginalize();
+        cout<<"begin marginalize...."<<endl;
+        new_marg_info->marginalizeWithoutThread();
+
+        if(marg_info!= nullptr)
+            delete marg_info;
+
+        marg_info = new_marg_info;
+        std::cout<<"Marginalization, Keep vertex size: "<<marg_info->keep_vertex_size.size()<<std::endl;
+    }
+
+    // recover Keyframes
+    for(deque<KeyFrame*>::const_iterator lit=vpKFs.begin(), lend=vpKFs.end(); lit!=lend; lit++)
+    {
+        KeyFrame* pKFi = *lit;
+        g2o::VertexNavStatePVR* vNSPVR = static_cast<g2o::VertexNavStatePVR*>(optimizer.vertex(2*pKFi->kf_idx));
+        g2o::VertexNavStateBias* vNSBias = static_cast<g2o::VertexNavStateBias*>(optimizer.vertex(2*pKFi->kf_idx+1));
+        // In optimized navstate, bias not changed, delta_bias not zero, should be added to bias
+        const NavState& optPVRns = vNSPVR->estimate();
+        const NavState& optBiasns = vNSBias->estimate();
+        NavState primaryns = pKFi->GetNavState();
+        // Update NavState
+        pKFi->SetNavStatePos(optPVRns.Get_P());
+        pKFi->SetNavStateVel(optPVRns.Get_V());
+        pKFi->SetNavStateRot(optPVRns.Get_R());
+
+        pKFi->SetNavStateDeltaBg(optBiasns.Get_dBias_Gyr());
+        pKFi->SetNavStateDeltaBa(optBiasns.Get_dBias_Acc());
+
+        //update Pose
+        Matrix3d Rot = pKFi->GetNavState().Get_RotMatrix() * Tcb.block<3,3>(0,0);
+        Vector3d trans = pKFi->GetNavState().Get_P() + pKFi->GetNavState().Get_RotMatrix()*Tcb.block<3,1>(0,3);
+        pKFi->SetCameraRot(Rot);
+        pKFi->SetCameraTans(trans);
+    }
+
+    //recover MapPoints
+    for(vector<MapPoint*>::const_iterator lit=local_pt.begin(), lend=local_pt.end(); lit!=lend; lit++)
+    {
+        MapPoint* pMP = *lit;
+        g2o::VertexLMPointXYZ* vPoint = static_cast<g2o::VertexLMPointXYZ*>(optimizer.vertex(pMP->idx+maxKFid+1));
+        pMP->point3D = vPoint->estimate();
+    }
+
+    //recover MapLines
+    for(vector<MapLine*>::const_iterator lit=local_ls.begin(), lend=local_ls.end(); lit!=lend; lit++){
+        MapLine* lML = *lit;
+        g2o::VertexLine* vLine = static_cast<g2o::VertexLine*>(optimizer.vertex(lML->idx+maxPointId+1));
+        lML->line3D = vLine->estimate();
+    }
+
+    //recover MapLinePoints
+//    for(vector<MapLine*>::const_iterator lit=local_ls.begin(), lend=local_ls.end(); lit!=lend; lit++){
+//        MapLine* lML = *lit;
+//        g2o::VertexLinePoint* vLinePoints = static_cast<g2o::VertexLinePoint*>(optimizer.vertex(lML->idx*2+maxPointId+1));
+//        g2o::VertexLinePoint* vLinePointe = static_cast<g2o::VertexLinePoint*>(optimizer.vertex(lML->idx*2+1+maxPointId+1));
+//        Vector6d est;
+//        est.head(3) = vLinePoints->estimate();
+//        est.tail(3) = vLinePointe->estimate();
+//        lML->line3D = est;
+//    }
+
+    cout<<"Finish Local Bundle Adjustment With IMU And Marg!"<<endl;
+    return 0;
 }
 
 void MapHandler::SaveKeyFrameTrajectoryTUM(const string &filename)

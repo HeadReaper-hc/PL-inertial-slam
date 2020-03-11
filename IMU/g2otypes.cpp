@@ -3,7 +3,26 @@
 namespace g2o
 {
 
+    VertexLMPointXYZ::VertexLMPointXYZ() : BaseVertex<3, Vector3d>()
+    {
+    }
 
+    bool VertexLMPointXYZ::read(std::istream& is)
+    {
+        Vector3d lv;
+        for (int i=0; i<3; i++)
+            is >> _estimate[i];
+        return true;
+    }
+
+    bool VertexLMPointXYZ::write(std::ostream& os) const
+    {
+        Vector3d lv=estimate();
+        for (int i=0; i<3; i++){
+            os << lv[i] << " ";
+        }
+        return os.good();
+    }
 
 void EdgeNavStatePVR::computeError()
 {
@@ -210,6 +229,8 @@ void EdgeNavStatePVR::linearizeOplus()
     _jacobianOplus[0] = JPVRi;
     _jacobianOplus[1] = JPVRj;
     _jacobianOplus[2] = JBiasi;
+
+    //std::cout<<"EdgeNav: "<<_jacobianOplus[0]<<std::endl;
 }
 
 void EdgeNavStateBias::computeError()
@@ -264,7 +285,7 @@ void EdgeNavStateBias::linearizeOplus()
 
 void EdgeNavStatePVRPointXYZ::linearizeOplus()
 {
-    const VertexSBAPointXYZ* vPoint = static_cast<const VertexSBAPointXYZ*>(_vertices[0]);
+    const VertexLMPointXYZ* vPoint = static_cast<const VertexLMPointXYZ*>(_vertices[0]);
     const VertexNavStatePVR* vNavState = static_cast<const VertexNavStatePVR*>(_vertices[1]);
 
     const NavState& ns = vNavState->estimate();
@@ -1074,7 +1095,7 @@ void EdgeNavState::linearizeOplus()
 /**
  * @brief EdgeNavStatePointXYZ::EdgeNavStatePointXYZ
  */
-EdgeNavStatePointXYZ::EdgeNavStatePointXYZ() : BaseBinaryEdge<2, Vector2d, VertexSBAPointXYZ, VertexNavState>()
+EdgeNavStatePointXYZ::EdgeNavStatePointXYZ() : BaseBinaryEdge<2, Vector2d, VertexLMPointXYZ, VertexNavState>()
 {
 }
 // Todo
@@ -1083,7 +1104,7 @@ bool EdgeNavStatePointXYZ::write(std::ostream& os) const {return true;}
 
 void EdgeNavStatePointXYZ::linearizeOplus()
 {
-    const VertexSBAPointXYZ* vPoint = static_cast<const VertexSBAPointXYZ*>(_vertices[0]);
+    const VertexLMPointXYZ* vPoint = static_cast<const VertexLMPointXYZ*>(_vertices[0]);
     const VertexNavState* vNavState = static_cast<const VertexNavState*>(_vertices[1]);
 
     const NavState& ns = vNavState->estimate();
@@ -1397,6 +1418,82 @@ void EdgeGyrBias::linearizeOplus()
         //debug
 //        _jacobianOplusXi = Matrix<double,1,3>::Zero();
 //        _jacobianOplusXj = Matrix<double,1,15>::Zero();
+ }
+
+ void EdgeMarginalization::computeError() {
+
+     MarginalizationInfo* marginalization_info = &(_measurement);
+
+     //debug
+//     std::cout<<"Keep vertex size: ";
+//     for(int i=0;i<marginalization_info->keep_vertex_size.size();i++){
+//         std::cout<<marginalization_info->keep_vertex_size[i]<<" ";
+//     }
+//     std::cout<<std::endl;
+//     std::cout<<"vertex size: "<<_vertices.size()<<std::endl;
+//     std::cout<<"marginalization_info->n: "<<marginalization_info->n<<std::endl;
+//     std::cout<<"Error size: "<<_error.size()<<std::endl;
+
+     int n = marginalization_info->n;
+     int m = marginalization_info->m;
+     Eigen::VectorXd dx(n);
+     for (int i = 0; i < marginalization_info->keep_vertex_size.size(); i++)
+     {
+         int size = marginalization_info->keep_vertex_size[i];
+         int idx = marginalization_info->keep_vertex_idx[i] - m;
+         if (size != 9) {
+             g2o::VertexNavStateBias* vertex = static_cast<g2o::VertexNavStateBias*>(_vertices[i]);
+             const NavState& bias = vertex->estimate();
+             Eigen::VectorXd x ;
+             if(size!=6){
+                 std::cout<<"Wrong size of bias...."<<std::endl;
+                 exit(0);
+             }
+             x.resize(size);
+             x.segment<3>(0) = bias.Get_BiasGyr() + bias.Get_dBias_Gyr();
+             x.segment<3>(3) = bias.Get_BiasAcc() + bias.Get_dBias_Acc();
+
+             Eigen::VectorXd x0 = marginalization_info->keep_vertex_data[i];
+             dx.segment(idx, size) = x - x0;
+         }
+         else
+         {
+             Eigen::VectorXd x0 = marginalization_info->keep_vertex_data[i];
+             const VertexNavStatePVR* vNavState = static_cast<const VertexNavStatePVR*>(_vertices[i]);
+             const NavState& state = vNavState->estimate();
+             dx.segment<3>(idx + 0) = state.Get_P() - x0.head<3>();
+             dx.segment<3>(idx + 3) = state.Get_V() - x0.segment<3>(3);
+             dx.segment<3>(idx + 6) = 2.0 * (Eigen::Quaterniond(x0(9), x0(6), x0(7), x0(8)).inverse() * Eigen::Quaterniond(state.Get_RotMatrix())).vec();
+         }
+     }
+     _error.resize(n);
+     _error = marginalization_info->linearized_residuals + marginalization_info->linearized_jacobians * dx;
+
+//     std::cout<<"_error: "<<_error.transpose()<<std::endl;
+//     std::cout<<"End computeError"<<std::endl;
+
+ }
+
+ void EdgeMarginalization::linearizeOplus() {
+     MarginalizationInfo* marginalization_info = &(_measurement);
+     int n = marginalization_info->n;
+     for(int i=0;i<marginalization_info->keep_vertex_size.size();i++){
+         int size = marginalization_info->keep_vertex_size[i];
+         int idx = marginalization_info->keep_vertex_idx[i] - marginalization_info->m;
+         MatrixXd jac(n,size);
+         jac.setZero();
+         jac = marginalization_info->linearized_jacobians.middleCols(idx, size);
+         //jac.setOnes();
+         _jacobianOplus[i] = jac;
+         //std::cout<<"jac["<<i<<"]: "<<jac<<std::endl;
+     }
+    // std::cout<<"Marg linear_jac: "<<marginalization_info->linearized_jacobians<<std::endl;
+
+     //debug
+//     for(int i=0;i<_jacobianOplus.size();i++){
+//         std::cout<<"_jacobianOPlus["<<i<<"]"<<std::endl;
+//         std::cout<<_jacobianOplus[i]<<std::endl;
+//     }
  }
 
 }
