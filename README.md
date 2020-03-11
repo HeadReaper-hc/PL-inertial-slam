@@ -35,7 +35,7 @@ Thankyou for their outstanding work. My code is basically copied from them. **Th
 
 <div align="center">
 
-<img src="https://github.com/HeadReaper-hc/PL-inertial-slam/blob/master/result/pl_vio_marg_loopclosing.png" width="300px" height="300px" ><img src="https://github.com/HeadReaper-hc/PL-inertial-slam/blob/master/result/pl_vio_no_marg_loopclosing.png" width="300px" height="300px" ><img src="https://github.com/HeadReaper-hc/PL-inertial-slam/blob/master/result/pl_slam_loopclosing.png" width="300px" height="300px" >
+<img src="https://github.com/HeadReaper-hc/PL-inertial-slam/blob/master/result/pl_vio_marg_loopclosing.png" width="250px" height="300px" ><img src="https://github.com/HeadReaper-hc/PL-inertial-slam/blob/master/result/pl_vio_no_marg_loopclosing.png" width="250px" height="300px" ><img src="https://github.com/HeadReaper-hc/PL-inertial-slam/blob/master/result/pl_slam_loopclosing.png" width="250px" height="300px" >
 
 </div>
 
